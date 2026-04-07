@@ -39,4 +39,3 @@ Notebook Navigator가 버전업 되어도 별도로 갈아엎거나 충돌되지
 
 ## Made by:
 Achmage / ACH (더베러_thebetter 단톡방)
-문의: laguna821@gmail.com
