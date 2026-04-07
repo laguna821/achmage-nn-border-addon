@@ -1,0 +1,130 @@
+/* @settings
+name: Achmage Notebook Navigator Border Add-on
+id: achmage-nn-border-addon
+settings:
+  -
+    id: ach-nn-border-width
+    title: Border width
+    type: variable-number-slider
+    default: 2
+    format: px
+    min: 1
+    max: 4
+    step: 1
+  -
+    id: ach-nn-border-radius
+    title: Border radius
+    type: variable-number-slider
+    default: 14
+    format: px
+    min: 0
+    max: 24
+    step: 1
+  -
+    id: ach-nn-border-opacity
+    title: Border opacity
+    type: variable-number-slider
+    default: 80
+    format: "%"
+    min: 20
+    max: 100
+    step: 5
+  -
+    id: ach-nn-border-inset-x
+    title: Border horizontal inset
+    type: variable-number-slider
+    default: 1
+    format: px
+    min: 0
+    max: 12
+    step: 1
+  -
+    id: ach-nn-border-inset-y
+    title: Border vertical inset
+    type: variable-number-slider
+    default: 3
+    format: px
+    min: 0
+    max: 12
+    step: 1
+  -
+    id: ach-nn-border-gradient-angle
+    title: Gradient angle
+    type: variable-number-slider
+    default: 135
+    format: deg
+    min: 0
+    max: 360
+    step: 5
+*/
+
+body {
+  --ach-nn-border-width: 2px;
+  --ach-nn-border-radius: 14px;
+  --ach-nn-border-opacity: 80%;
+  --ach-nn-border-inset-x: 1px;
+  --ach-nn-border-inset-y: 3px;
+  --ach-nn-border-gradient-angle: 135deg;
+  --ach-nn-border-pad-x: 1px;
+  --ach-nn-border-pad-y: 3px;
+}
+
+.ach-nn-border-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 4;
+}
+
+.ach-nn-folder-border-box {
+  position: absolute;
+  box-sizing: border-box;
+  pointer-events: none;
+}
+
+.ach-nn-folder-border-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.ach-nn-folder-border-path {
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.ach-nn-recent-swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.ach-nn-swatch {
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  border: 1px solid var(--background-modifier-border);
+}
+
+.ach-nn-field-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.ach-nn-field-action {
+  white-space: nowrap;
+}
+
+.ach-nn-modal-note {
+  margin: 8px 0 0;
+  color: var(--text-muted);
+}
+
+.ach-nn-modal-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+}
