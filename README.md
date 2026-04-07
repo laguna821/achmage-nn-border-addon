@@ -36,3 +36,7 @@ Notebook Navigator가 버전업 되어도 별도로 갈아엎거나 충돌되지
 - Change border로 테두리 색깔을 예쁘게 집어넣습니다.
 - 끝! 아주 간단해요.
 - 참고: 한 가지 색깔로 냅둘 수 있지만 두 가지 색을 그래디언트 컬러로 섞을 수 있습니다! (별거 아닌데 은근 디테일에 집착하는 스타일이라..)
+
+## Made by:
+Achmage / ACH (더베러_thebetter 단톡방)
+문의: laguna821@gmail.com
