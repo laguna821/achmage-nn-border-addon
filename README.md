@@ -1,11 +1,13 @@
 <img width="209" height="93" alt="Image" src="https://github.com/user-attachments/assets/43efdf67-9f7d-4315-ac0c-51a65cfeb1c7" />
 
 <img width="210" height="215" alt="Image" src="https://github.com/user-attachments/assets/b8d10e8c-f57a-45a5-bf9f-27d6db01f08b" />
+
+<img width="199" height="235" alt="Image" src="https://github.com/user-attachments/assets/1a514e42-0bbd-46f7-94d5-1208bc5d44af" />
+
+
 <br>
-<img width="418" height="275" alt="Image" src="https://github.com/user-attachments/assets/37e75050-dd8e-4a30-a59d-a473317a4a8a" />
-
+<img width="418" height="457" alt="Image" src="https://github.com/user-attachments/assets/ffa4f521-c4f8-4044-a828-224127822ba9" />
 <img width="168" height="148" alt="Image" src="https://github.com/user-attachments/assets/2245e679-e3b6-4677-a82f-27125dea7285" />
-
 
 
 ## 옵시디언 (Obsidian) 노트북 네비게이터 (Notebook Navigator)와 호환되는 폴더 테두리 플러그인.
