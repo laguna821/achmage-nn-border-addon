@@ -1,0 +1,10 @@
+{
+  "name": "achmage-nn-border-addon",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Folder and grouped-folder borders for Notebook Navigator. Dev scripts only; the plugin itself needs no build.",
+  "scripts": {
+    "test": "node --test dev/test/main.test.js",
+    "e2e": "node dev/e2e/smoke.mjs"
+  }
+}

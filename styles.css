@@ -3,6 +3,12 @@ name: Achmage Notebook Navigator Border Add-on
 id: achmage-nn-border-addon
 settings:
   -
+    id: ach-nn-folder-heading
+    title: Folder borders
+    type: heading
+    level: 2
+    collapsed: false
+  -
     id: ach-nn-border-width
     title: Border width
     type: variable-number-slider
@@ -52,12 +58,58 @@ settings:
   -
     id: ach-nn-border-gradient-angle
     title: Gradient angle
+    description: Shared by folder and group borders.
     type: variable-number-slider
     default: 135
     format: deg
     min: 0
     max: 360
     step: 5
+  -
+    id: ach-nn-group-heading
+    title: Group borders
+    description: One border around a block of grouped folders. Groups are managed in the plugin settings.
+    type: heading
+    level: 2
+    collapsed: false
+  -
+    id: ach-nn-group-border-width
+    title: Group border width
+    type: variable-number-slider
+    default: 2
+    format: px
+    min: 0.5
+    max: 4
+    step: 0.5
+  -
+    id: ach-nn-group-border-radius
+    title: Default group border radius
+    type: variable-number-slider
+    default: 10
+    format: px
+    min: 0
+    max: 24
+    step: 1
+  -
+    id: ach-nn-group-border-inset-x
+    title: Default group border horizontal position
+    description: Negative moves outward. Positive moves inward.
+    type: variable-number-slider
+    default: 0
+    format: px
+    min: -12
+    max: 12
+    step: 1
+  -
+    id: ach-nn-group-border-inset-y
+    title: Default group border vertical position
+    description: Space between neighbouring blocks. Negative moves outward. Positive moves inward.
+    type: variable-number-slider
+    default: 1
+    format: px
+    min: -12
+    max: 12
+    step: 1
 */
 
 body {
@@ -69,6 +121,10 @@ body {
   --ach-nn-border-gradient-angle: 135deg;
   --ach-nn-border-pad-x: 1px;
   --ach-nn-border-pad-y: 1px;
+  --ach-nn-group-border-width: 2px;
+  --ach-nn-group-border-radius: 10px;
+  --ach-nn-group-border-inset-x: 0px;
+  --ach-nn-group-border-inset-y: 1px;
 }
 
 .ach-nn-border-layer {
@@ -82,6 +138,12 @@ body {
   position: absolute;
   box-sizing: border-box;
   pointer-events: none;
+  z-index: 1;
+}
+
+/* Group blocks sit underneath folder borders. */
+.ach-nn-group-border-box {
+  z-index: 0;
 }
 
 .ach-nn-folder-border-svg {
@@ -141,4 +203,66 @@ body {
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
   text-align: right;
+}
+
+/* Light/dark preview chips: the border color drawn on each theme's background. */
+.ach-nn-style-preview {
+  display: inline-flex;
+  gap: 4px;
+  margin-right: 8px;
+  vertical-align: middle;
+}
+
+.ach-nn-style-chip {
+  --ach-nn-chip-bg: #ffffff;
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  box-sizing: border-box;
+  border: 2px solid transparent;
+  border-radius: 6px;
+  background:
+    linear-gradient(var(--ach-nn-chip-bg), var(--ach-nn-chip-bg)) padding-box,
+    linear-gradient(135deg, var(--ach-nn-chip-start), var(--ach-nn-chip-end)) border-box;
+}
+
+.ach-nn-style-chip.is-dark {
+  --ach-nn-chip-bg: #121317;
+}
+
+.ach-nn-group-members {
+  margin: 0 0 12px;
+  padding: 0 0 0 26px;
+}
+
+.ach-nn-group-member {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+
+.ach-nn-group-member.is-empty {
+  padding: 4px 0;
+  font-style: italic;
+}
+
+.ach-nn-empty-note {
+  padding: 4px 0 12px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+
+.ach-nn-group-suggestion {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.ach-nn-group-suggestion-count {
+  margin-left: auto;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
 }
