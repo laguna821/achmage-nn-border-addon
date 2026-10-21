@@ -10,6 +10,9 @@
  *   - Group borders:  one border around a block of folders grouped by the user.
  *     Grouped folders that sit next to each other in the tree share a single
  *     border; anything else in between starts a new block.
+ *   - Folder colors:  separate light/dark text and background colors for folders,
+ *     drawn over Notebook Navigator's single color with a generated stylesheet.
+ *     Notebook Navigator's own data is never written.
  *
  * Every border can use separate colors in light and dark mode.
  */
@@ -114,7 +117,7 @@ function readOpacityVar(computed, name, fallback) {
 // Settings
 // ---------------------------------------------------------------------------
 
-const SETTINGS_VERSION = 4;
+const SETTINGS_VERSION = 5;
 const MAX_RECENT_COLORS = 12;
 const DEFAULT_COLOR = "#7f8c8d";
 const HEX_COLOR = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
@@ -123,8 +126,10 @@ const DEFAULT_SETTINGS = {
   version: SETTINGS_VERSION,
   folderBorders: {},
   borderGroups: [],
+  folderColorOverrides: {},
   showFolderBorders: true,
   showGroupBorders: true,
+  showFolderColors: true,
   recentBorderColors: [],
   suppressNestedBorders: true,
   debug: false,
@@ -138,8 +143,10 @@ async function loadSettings(plugin) {
     version: SETTINGS_VERSION,
     folderBorders: normalizeFolderBorders(raw?.folderBorders),
     borderGroups: normalizeBorderGroups(raw?.borderGroups),
+    folderColorOverrides: normalizeFolderColorOverrides(raw?.folderColorOverrides),
     showFolderBorders: raw?.showFolderBorders !== false,
     showGroupBorders: raw?.showGroupBorders !== false,
+    showFolderColors: raw?.showFolderColors !== false,
     suppressNestedBorders: raw?.suppressNestedBorders !== false,
     recentBorderColors: Array.isArray(raw?.recentBorderColors)
       ? raw.recentBorderColors
@@ -337,6 +344,211 @@ function resolveThemeColors(style, dark) {
     return { startColor: style.darkStartColor, endColor: style.darkEndColor ?? null };
   }
   return { startColor: style.startColor, endColor: style.endColor ?? null };
+}
+
+// ---------------------------------------------------------------------------
+// Folder colors (light/dark)
+// ---------------------------------------------------------------------------
+
+// Notebook Navigator keeps one text color and one background per folder.
+// An override gives each theme its own value:
+//   { light: { color, background }, dark: { color, background } }
+// A missing value keeps Notebook Navigator's color in that theme; "none"
+// removes it there.
+const THEMES = ["light", "dark"];
+const FOLDER_COLOR_KEYS = ["color", "background"];
+const NO_COLOR = "none";
+const CSS_HEX_COLOR = /^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/;
+const FOLDER_ROW = ".nn-navitem.nn-folder";
+
+// Hex colors with optional alpha (#rgb, #rgba, #rrggbb, #rrggbbaa) or "none".
+function normalizeFolderColorValue(value) {
+  if (typeof value !== "string") return null;
+  const lower = value.trim().toLowerCase();
+  if (lower === NO_COLOR) return NO_COLOR;
+  if (!CSS_HEX_COLOR.test(lower)) return null;
+  if (lower.length > 5) return lower;
+  return `#${lower
+    .slice(1)
+    .split("")
+    .map((digit) => digit + digit)
+    .join("")}`;
+}
+
+function normalizeFolderColorOverride(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const override = {};
+  for (const theme of THEMES) {
+    const slots = {};
+    for (const key of FOLDER_COLOR_KEYS) {
+      const value = normalizeFolderColorValue(raw[theme]?.[key]);
+      if (value) slots[key] = value;
+    }
+    if (Object.keys(slots).length > 0) override[theme] = slots;
+  }
+  return Object.keys(override).length > 0 ? override : null;
+}
+
+function normalizeFolderColorOverrides(raw) {
+  if (!raw || typeof raw !== "object") return {};
+  const overrides = {};
+  for (const [path, value] of Object.entries(raw)) {
+    const override = normalizeFolderColorOverride(value);
+    if (override) overrides[path] = override;
+  }
+  return overrides;
+}
+
+function overrideColors(override) {
+  return THEMES.flatMap((theme) => FOLDER_COLOR_KEYS.map((key) => override[theme]?.[key])).filter(
+    (value) => value && value !== NO_COLOR,
+  );
+}
+
+// Folders that show an override in one theme, grouped by color value.
+// Walks the tree the way Notebook Navigator resolves colors: a folder without a
+// color of its own takes its parent's when inheritance is on, so subfolders of
+// an overridden folder follow the override until one has its own color.
+//   tree.children(path)     - child folder paths ("/" is the vault root)
+//   tree.hasOwn(path, key)  - Notebook Navigator has its own color/background there
+function collectFolderColorRules(tree, overrides, theme, key, inherit) {
+  const valueOf = (path) => getOwn(overrides, path)?.[theme]?.[key] ?? null;
+  const overridePaths = Object.keys(overrides).filter((path) => valueOf(path));
+  const rules = new Map();
+  if (overridePaths.length === 0) return rules;
+  const hasOverrideBelow = (path) => path === "/" || overridePaths.some((other) => isSameOrDescendant(path, other));
+  const visit = (path, inherited) => {
+    const value = valueOf(path) ?? (inherit && !tree.hasOwn(path, key) ? inherited : null);
+    if (value) {
+      if (!rules.has(value)) rules.set(value, []);
+      rules.get(value).push(path);
+    }
+    if (!(value && inherit) && !hasOverrideBelow(path)) return;
+    for (const child of tree.children(path)) visit(child, value);
+  };
+  visit("/", null);
+  return rules;
+}
+
+function cssString(value) {
+  const escaped = value.replace(/[\\"]/g, "\\$&").replace(/[\n\r\f]/g, (char) => `\\${char.charCodeAt(0).toString(16)} `);
+  return `"${escaped}"`;
+}
+
+function folderRowSelectors(theme, paths, suffix) {
+  return paths.map((path) => `body.theme-${theme} ${FOLDER_ROW}[data-path=${cssString(path)}]${suffix}`).join(",\n");
+}
+
+// Notebook Navigator writes folder colors as inline styles: `color` on the
+// icon and name, `--nn-navitem-custom-bg-color` on the row. !important rules
+// win over inline styles, and theme-scoped selectors switch with the theme.
+function buildFolderColorCss(tree, overrides, { inherit = true, colorIconOnly = false } = {}) {
+  const blocks = [];
+  const rule = (selectors, declarations) => blocks.push(`${selectors} {\n  ${declarations.join(";\n  ")};\n}`);
+  for (const theme of THEMES) {
+    for (const [value, paths] of collectFolderColorRules(tree, overrides, theme, "color", inherit)) {
+      const rows = (suffix) => folderRowSelectors(theme, paths, suffix);
+      if (value === NO_COLOR) {
+        rule(rows(":not(.nn-selected) .nn-navitem-icon"), ["color: var(--nn-theme-navitem-icon-color) !important"]);
+        rule(rows(".nn-selected .nn-navitem-icon"), ["color: var(--nn-selected-navitem-icon-color) !important"]);
+        if (colorIconOnly) continue;
+        const weight = "font-weight: var(--nn-theme-navitem-name-font-weight)";
+        rule(rows(":not(.nn-selected) .nn-navitem-name"), ["color: var(--nn-theme-navitem-name-color) !important", weight]);
+        rule(rows(".nn-selected .nn-navitem-name"), ["color: var(--nn-selected-navitem-name-color) !important", weight]);
+      } else {
+        rule(rows(" .nn-navitem-icon"), [`color: ${value} !important`]);
+        if (colorIconOnly) continue;
+        rule(rows(" .nn-navitem-name"), [`color: ${value} !important`, "font-weight: var(--nn-theme-navitem-custom-color-name-font-weight)"]);
+      }
+    }
+    const filled = [];
+    for (const [value, paths] of collectFolderColorRules(tree, overrides, theme, "background", inherit)) {
+      rule(folderRowSelectors(theme, paths, ""), [`--nn-navitem-custom-bg-color: ${value === NO_COLOR ? "transparent" : value} !important`]);
+      if (value !== NO_COLOR) filled.push(...paths);
+    }
+    if (filled.length === 0) continue;
+    // Rows Notebook Navigator renders without a background have no ::before
+    // layer, so draw one the way it does.
+    const bare = (suffix) => folderRowSelectors(theme, filled, `:not(.nn-has-custom-background)${suffix}`);
+    rule(bare(""), ["position: relative"]);
+    rule(bare("::before"), [
+      'content: ""',
+      "position: absolute",
+      "top: 0",
+      "inset-inline-start: 0",
+      "inset-inline-end: 0",
+      "bottom: var(--nn-navitem-background-bottom-overdraw, 0px)",
+      "background-color: var(--nn-navitem-custom-bg-color)",
+      "border-radius: min(14px, var(--nn-theme-navitem-border-radius, 4px))",
+      "box-shadow: inset 0 0 0 var(--nn-theme-navitem-border-width, 0px) var(--nn-theme-navitem-custom-border-color, transparent)",
+      "z-index: 0",
+      "pointer-events: none",
+    ]);
+    rule(bare(" > .nn-navitem-content"), ["position: relative", "z-index: 2"]);
+  }
+  return blocks.join("\n");
+}
+
+function folderAtPath(app, path) {
+  const file = path === "/" ? app.vault.getRoot() : app.vault.getAbstractFileByPath(path);
+  return file instanceof TFolder ? file : null;
+}
+
+// The vault's folder tree plus Notebook Navigator's own colors (read through
+// its public API, which also covers folder-note frontmatter colors).
+function notebookNavigatorFolderTree(app, api) {
+  const own = new Map();
+  const ownColors = (path) => {
+    if (!own.has(path)) {
+      const folder = folderAtPath(app, path);
+      own.set(path, folder ? api.metadata?.getFolderMeta?.(folder) ?? null : null);
+    }
+    return own.get(path);
+  };
+  return {
+    children(path) {
+      const folder = folderAtPath(app, path);
+      return folder ? folder.children.filter((child) => child instanceof TFolder).map((child) => child.path) : [];
+    },
+    hasOwn(path, key) {
+      const meta = ownColors(path);
+      return Boolean(key === "background" ? meta?.backgroundColor : meta?.color);
+    },
+  };
+}
+
+// Notebook Navigator settings that change how its folder colors are drawn.
+function readNotebookNavigatorColorFlags(app) {
+  const settings = app.plugins?.plugins?.["notebook-navigator"]?.settings;
+  return { inherit: settings?.inheritFolderColors !== false, colorIconOnly: settings?.colorIconOnly === true };
+}
+
+class FolderColorStyles {
+  constructor() {
+    this.styleEl = null;
+    this.css = "";
+  }
+
+  apply(css) {
+    if (css === this.css) return;
+    if (!css) {
+      this.remove();
+      return;
+    }
+    this.css = css;
+    if (!this.styleEl) {
+      this.styleEl = document.createElement("style");
+      this.styleEl.id = "ach-nn-folder-colors";
+      document.head.appendChild(this.styleEl);
+    }
+    this.styleEl.textContent = css;
+  }
+
+  remove() {
+    this.styleEl?.remove();
+    this.styleEl = null;
+    this.css = "";
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -655,8 +867,10 @@ class FrameScheduler {
 }
 
 class BorderOverlay {
-  constructor(getSettings) {
+  // afterRerender runs after every redraw pass, i.e. whenever the tree changed.
+  constructor(getSettings, afterRerender) {
     this.getSettings = getSettings;
+    this.afterRerender = afterRerender;
     this.panes = new Map();
     this.scheduler = new FrameScheduler();
     this.warnOnceKeys = new Set();
@@ -678,6 +892,7 @@ class BorderOverlay {
   rerenderAll() {
     this.cleanupDetachedPanes();
     for (const binding of this.panes.values()) this.renderBinding(binding);
+    this.afterRerender?.();
   }
 
   scanAndAttach() {
@@ -915,6 +1130,40 @@ function createStylePreview(style) {
   return preview;
 }
 
+// One "A" chip per theme: the folder's text color on its background.
+// nnColors are Notebook Navigator's own colors, shown where nothing overrides them.
+function createFolderColorPreview(override, nnColors) {
+  const preview = document.createElement("span");
+  preview.className = "ach-nn-style-preview";
+  for (const theme of THEMES) {
+    const valueOf = (key) => {
+      const value = override?.[theme]?.[key] ?? nnColors?.[key] ?? null;
+      return value === NO_COLOR ? null : value;
+    };
+    const chip = document.createElement("span");
+    chip.className = `ach-nn-color-chip is-${theme}`;
+    chip.textContent = "A";
+    const color = valueOf("color");
+    const background = valueOf("background");
+    if (color) chip.style.setProperty("--ach-nn-chip-text", color);
+    if (background) chip.style.setProperty("--ach-nn-chip-fill", background);
+    chip.setAttribute("aria-label", theme === "dark" ? "Dark mode" : "Light mode");
+    preview.appendChild(chip);
+  }
+  return preview;
+}
+
+function renderRecentSwatches(containerEl, colors, label, onPick) {
+  if (colors.length === 0) return null;
+  const swatches = containerEl.createDiv({ cls: "ach-nn-recent-swatches" });
+  for (const color of colors) {
+    const swatch = swatches.createEl("button", { cls: "ach-nn-swatch", attr: { type: "button", "aria-label": `${label}: ${color}` } });
+    swatch.style.backgroundColor = color;
+    swatch.addEventListener("click", () => onPick(color));
+  }
+  return swatches;
+}
+
 class BorderStyleModal extends Modal {
   /**
    * opts: {
@@ -1137,18 +1386,11 @@ class BorderStyleModal extends Modal {
         component.onChange((value) => field.onChange(value.trim()));
         text = component;
       });
-    if (this.opts.recentColors.length > 0) {
-      const swatches = containerEl.createDiv({ cls: "ach-nn-recent-swatches" });
-      for (const color of this.opts.recentColors) {
-        const swatch = swatches.createEl("button", { cls: "ach-nn-swatch", attr: { type: "button", "aria-label": `${field.name}: ${color}` } });
-        swatch.style.backgroundColor = color;
-        swatch.addEventListener("click", () => {
-          field.onChange(color);
-          text?.setValue(color);
-          picker?.setValue(color);
-        });
-      }
-    }
+    renderRecentSwatches(containerEl, this.opts.recentColors, field.name, (color) => {
+      field.onChange(color);
+      text?.setValue(color);
+      picker?.setValue(color);
+    });
     if (!picker || !text) throw new Error(`Failed to render color field: ${field.name}`);
     return { picker, text };
   }
@@ -1192,6 +1434,143 @@ class ConfirmModal extends Modal {
         this.close();
       });
     new ButtonComponent(actions).setButtonText("Cancel").onClick(() => this.close());
+  }
+}
+
+const FOLDER_COLOR_FIELDS = [
+  { key: "color", name: "Text and icon color" },
+  { key: "background", name: "Background" },
+];
+const SLOT_MODES = { follow: "Notebook Navigator", custom: "Custom color", none: "None" };
+
+class FolderColorModal extends Modal {
+  /**
+   * opts: {
+   *   path, current  - saved override or null
+   *   nnColors       - Notebook Navigator's own { color, background }
+   *   recentColors, onApply(override | null), onClear?
+   * }
+   */
+  constructor(app, opts) {
+    super(app);
+    this.opts = opts;
+    // slots[theme][key] = { mode: "follow" | "custom" | "none", custom: "#rrggbb" }
+    this.slots = {};
+    for (const theme of THEMES) {
+      this.slots[theme] = {};
+      for (const { key } of FOLDER_COLOR_FIELDS) {
+        const value = opts.current?.[theme]?.[key] ?? null;
+        this.slots[theme][key] = {
+          mode: value === null ? "follow" : value === NO_COLOR ? "none" : "custom",
+          custom: value && value !== NO_COLOR ? value : this.suggestedColor(key),
+        };
+      }
+    }
+  }
+
+  // A custom slot starts from Notebook Navigator's color, so tweaking it is easy.
+  suggestedColor(key) {
+    const nnValue = normalizeFolderColorValue(this.opts.nnColors[key] ?? "");
+    return nnValue && nnValue !== NO_COLOR ? nnValue : this.opts.recentColors[0] ?? DEFAULT_COLOR;
+  }
+
+  onOpen() {
+    this.setTitle(`Folder colors: ${displayFolderPath(this.opts.path)}`);
+    const { contentEl } = this;
+    contentEl.replaceChildren();
+    contentEl.createEl("p", {
+      cls: "ach-nn-modal-note",
+      text: "Notebook Navigator gives a folder one color for both modes. Choose what each mode shows; “Notebook Navigator” keeps its color in that mode. Subfolders follow when Notebook Navigator inherits folder colors.",
+    });
+    for (const theme of THEMES) {
+      new Setting(contentEl).setName(theme === "dark" ? "Dark mode" : "Light mode").setHeading();
+      for (const field of FOLDER_COLOR_FIELDS) this.renderSlot(contentEl, this.slots[theme][field.key], field);
+    }
+
+    const actions = contentEl.createDiv({ cls: "ach-nn-modal-actions" });
+    new ButtonComponent(actions)
+      .setButtonText("Apply")
+      .setCta()
+      .onClick(async () => {
+        const override = this.buildOverride();
+        if (override === undefined) {
+          new Notice("Enter valid hex colors like #aabbcc.");
+          return;
+        }
+        await this.opts.onApply(override);
+        this.close();
+      });
+    if (this.opts.onClear) {
+      new ButtonComponent(actions).setButtonText("Clear").onClick(async () => {
+        await this.opts.onClear();
+        this.close();
+      });
+    }
+  }
+
+  // null when every slot follows Notebook Navigator; undefined when a custom
+  // color is not a valid hex color.
+  buildOverride() {
+    const override = {};
+    for (const theme of THEMES) {
+      for (const { key } of FOLDER_COLOR_FIELDS) {
+        const slot = this.slots[theme][key];
+        if (slot.mode === "follow") continue;
+        const value = slot.mode === "none" ? NO_COLOR : normalizeFolderColorValue(slot.custom);
+        if (!value) return undefined;
+        override[theme] = { ...override[theme], [key]: value };
+      }
+    }
+    return normalizeFolderColorOverride(override);
+  }
+
+  renderSlot(containerEl, slot, field) {
+    let picker = null;
+    let text = null;
+    const setting = new Setting(containerEl)
+      .setName(field.name)
+      .setDesc(`Notebook Navigator: ${this.opts.nnColors[field.key] ?? "not set"}`);
+    setting.settingEl.addClass("ach-nn-color-slot");
+    setting.addDropdown((dropdown) =>
+      dropdown
+        .addOptions(SLOT_MODES)
+        .setValue(slot.mode)
+        .onChange((mode) => {
+          slot.mode = mode;
+          showCustom();
+        }),
+    );
+    setting.addColorPicker((component) => {
+      component.setValue(slot.custom.slice(0, 7));
+      component.onChange((value) => {
+        slot.custom = value;
+        text?.setValue(value);
+      });
+      picker = component;
+    });
+    setting.addText((component) => {
+      component
+        .setPlaceholder("#aabbcc")
+        .setValue(slot.custom)
+        .onChange((value) => {
+          slot.custom = value.trim();
+          const hex = normalizeHexColor(slot.custom);
+          if (hex) picker?.setValue(hex);
+        });
+      text = component;
+    });
+    const swatches = renderRecentSwatches(containerEl, this.opts.recentColors, field.name, (color) => {
+      slot.custom = color;
+      text?.setValue(color);
+      picker?.setValue(color);
+    });
+    // The color inputs (hidden via CSS) and swatches only matter for a custom color.
+    const showCustom = () => {
+      const custom = slot.mode === "custom";
+      setting.settingEl.toggleClass("is-custom", custom);
+      swatches?.toggle(custom);
+    };
+    showCustom();
   }
 }
 
@@ -1278,6 +1657,12 @@ class BorderSettingTab extends PluginSettingTab {
         toggle.setValue(settings.showGroupBorders).onChange((value) => this.plugin.updateSettings({ showGroupBorders: value })),
       );
     new Setting(containerEl)
+      .setName("Show folder colors")
+      .setDesc("Light/dark text and background colors set with “Folder colors (light/dark)...”. Turning this off keeps them saved.")
+      .addToggle((toggle) =>
+        toggle.setValue(settings.showFolderColors).onChange((value) => this.plugin.updateSettings({ showFolderColors: value })),
+      );
+    new Setting(containerEl)
       .setName("Hide nested folder borders")
       .setDesc("When a bordered folder is expanded, bordered subfolders inside it don't get their own border.")
       .addToggle((toggle) =>
@@ -1324,6 +1709,36 @@ class BorderSettingTab extends PluginSettingTab {
           .setTooltip("Clear border")
           .onClick(async () => {
             await this.plugin.clearFolderBorder(path);
+            refresh();
+          }),
+      );
+    }
+
+    new Setting(containerEl)
+      .setName("Folder colors (light/dark)")
+      .setDesc(
+        "Text and background colors per mode, shown instead of Notebook Navigator's single folder color. Notebook Navigator's own settings are not changed.",
+      )
+      .setHeading();
+    const colorPaths = Object.keys(settings.folderColorOverrides).sort((a, b) => a.localeCompare(b));
+    if (colorPaths.length === 0) {
+      containerEl.createDiv({ cls: "ach-nn-empty-note", text: "No folder colors yet. Right-click a folder → “Folder colors (light/dark)...”." });
+    }
+    for (const path of colorPaths) {
+      const setting = new Setting(containerEl).setName(displayFolderPath(path));
+      setting.nameEl.prepend(createFolderColorPreview(settings.folderColorOverrides[path], this.plugin.readNotebookNavigatorFolderColors(path)));
+      setting.addExtraButton((button) =>
+        button
+          .setIcon("palette")
+          .setTooltip("Edit folder colors")
+          .onClick(() => this.plugin.openFolderColorEditor(path, refresh)),
+      );
+      setting.addExtraButton((button) =>
+        button
+          .setIcon("x")
+          .setTooltip("Clear folder colors")
+          .onClick(async () => {
+            await this.plugin.clearFolderColors(path);
             refresh();
           }),
       );
@@ -1430,6 +1845,12 @@ function registerFolderMenu(plugin, api) {
     });
     addItem((item) => {
       item
+        .setTitle("Folder colors (light/dark)...")
+        .setIcon("sun-moon")
+        .onClick(() => plugin.openFolderColorEditor(path));
+    });
+    addItem((item) => {
+      item
         .setTitle(group ? "Move to border group..." : "Add to border group...")
         .setIcon("group")
         .onClick(() => plugin.openGroupPicker(path));
@@ -1463,7 +1884,13 @@ class AchmageNnBorderAddon extends Plugin {
     super(...args);
     this.settings = DEFAULT_SETTINGS;
     this.nn = null;
-    this.overlay = new BorderOverlay(() => this.settings);
+    this.overlay = new BorderOverlay(
+      () => this.settings,
+      () => this.checkFolderColorFlags(),
+    );
+    this.folderColorStyles = new FolderColorStyles();
+    this.folderColorScheduler = new FrameScheduler();
+    this.folderColorFlags = null;
     this.disposeFolderMenu = null;
     this.nnEventRefs = [];
     this.bootstrapInFlight = false;
@@ -1490,7 +1917,9 @@ class AchmageNnBorderAddon extends Plugin {
         await this.updateFolderPaths({
           folderBorders: renameFolderKeys(this.settings.folderBorders, oldPath, file.path),
           borderGroups: renameGroupFolders(this.settings.borderGroups, oldPath, file.path),
+          folderColorOverrides: renameFolderKeys(this.settings.folderColorOverrides, oldPath, file.path),
         });
+        this.requestFolderColorRefresh();
       }),
     );
     this.registerEvent(
@@ -1499,7 +1928,15 @@ class AchmageNnBorderAddon extends Plugin {
         await this.updateFolderPaths({
           folderBorders: removeFolderKeys(this.settings.folderBorders, file.path),
           borderGroups: removeGroupFolders(this.settings.borderGroups, file.path),
+          folderColorOverrides: removeFolderKeys(this.settings.folderColorOverrides, file.path),
         });
+        this.requestFolderColorRefresh();
+      }),
+    );
+    // A new subfolder of an overridden folder inherits its colors.
+    this.registerEvent(
+      this.app.vault.on("create", (file) => {
+        if (file instanceof TFolder) this.requestFolderColorRefresh();
       }),
     );
 
@@ -1513,6 +1950,31 @@ class AchmageNnBorderAddon extends Plugin {
     this.disposeNotebookNavigatorIntegration();
     this.styleObserver?.disconnect();
     this.styleObserver = null;
+  }
+
+  requestFolderColorRefresh() {
+    if (!this.nn) return;
+    this.folderColorScheduler.request(() => this.refreshFolderColors());
+  }
+
+  refreshFolderColors() {
+    const overrides = this.settings.folderColorOverrides;
+    if (!this.nn || !this.settings.showFolderColors || Object.keys(overrides).length === 0) {
+      this.folderColorFlags = null;
+      this.folderColorStyles.remove();
+      return;
+    }
+    const flags = readNotebookNavigatorColorFlags(this.app);
+    this.folderColorFlags = `${flags.inherit}:${flags.colorIconOnly}`;
+    this.folderColorStyles.apply(buildFolderColorCss(notebookNavigatorFolderTree(this.app, this.nn), overrides, flags));
+  }
+
+  // Notebook Navigator has no event for its own settings, but its tree
+  // re-renders after a change, which reaches the overlay's observers.
+  checkFolderColorFlags() {
+    if (this.folderColorFlags === null) return;
+    const flags = readNotebookNavigatorColorFlags(this.app);
+    if (`${flags.inherit}:${flags.colorIconOnly}` !== this.folderColorFlags) this.requestFolderColorRefresh();
   }
 
   async bootstrap() {
@@ -1540,6 +2002,7 @@ class AchmageNnBorderAddon extends Plugin {
       this.disposeFolderMenu = registerFolderMenu(this, api);
       this.registerNotebookNavigatorEvents(api);
       this.attachToPanes();
+      this.requestFolderColorRefresh();
     } finally {
       this.bootstrapInFlight = false;
     }
@@ -1561,6 +2024,11 @@ class AchmageNnBorderAddon extends Plugin {
     for (const eventName of ["storage-ready", "nav-item-changed", "folder-changed"]) {
       this.nnEventRefs.push(api.on(eventName, () => this.overlay.requestRerenderAll()));
     }
+    // A folder that gets or loses its own Notebook Navigator color changes
+    // where inherited overrides stop.
+    for (const eventName of ["storage-ready", "folder-changed"]) {
+      this.nnEventRefs.push(api.on(eventName, () => this.requestFolderColorRefresh()));
+    }
   }
 
   disposeNotebookNavigatorEvents() {
@@ -1577,6 +2045,8 @@ class AchmageNnBorderAddon extends Plugin {
     this.disposeFolderMenu = null;
     this.disposeNotebookNavigatorEvents();
     this.overlay.stop();
+    this.folderColorStyles.remove();
+    this.folderColorFlags = null;
     this.nn = null;
   }
 
@@ -1592,6 +2062,7 @@ class AchmageNnBorderAddon extends Plugin {
   async persistAndRender() {
     await saveSettings(this, this.settings);
     this.overlay.requestRerenderAll();
+    this.requestFolderColorRefresh();
   }
 
   async updateSettings(patch) {
@@ -1601,8 +2072,8 @@ class AchmageNnBorderAddon extends Plugin {
 
   // Folder renames/deletes only touch data.json when a saved path changed.
   async updateFolderPaths(patch) {
-    const before = JSON.stringify([this.settings.folderBorders, this.settings.borderGroups]);
-    if (JSON.stringify([patch.folderBorders, patch.borderGroups]) === before) return;
+    const changed = Object.keys(patch).some((key) => JSON.stringify(patch[key]) !== JSON.stringify(this.settings[key]));
+    if (!changed) return;
     await this.updateSettings(patch);
   }
 
@@ -1714,6 +2185,57 @@ class AchmageNnBorderAddon extends Plugin {
         group.id === groupId ? { ...group, folders: group.folders.filter((folder) => folder !== path) } : group,
       ),
     });
+  }
+
+  // --- folder colors --------------------------------------------------------
+
+  // The folder's own Notebook Navigator colors (not inherited ones).
+  readNotebookNavigatorFolderColors(path) {
+    const folder = folderAtPath(this.app, path);
+    const meta = folder ? this.nn?.metadata?.getFolderMeta?.(folder) : null;
+    return { color: meta?.color ?? null, background: meta?.backgroundColor ?? null };
+  }
+
+  openFolderColorEditor(path, onDone) {
+    const current = getOwn(this.settings.folderColorOverrides, path) ?? null;
+    new FolderColorModal(this.app, {
+      path,
+      current,
+      nnColors: this.readNotebookNavigatorFolderColors(path),
+      recentColors: this.settings.recentBorderColors,
+      onApply: async (override) => {
+        await this.setFolderColors(path, override);
+        new Notice(override ? `Folder colors saved for ${path}` : `Folder colors removed for ${path}`);
+        onDone?.();
+      },
+      onClear: current
+        ? async () => {
+            await this.clearFolderColors(path);
+            new Notice(`Folder colors removed for ${path}`);
+            onDone?.();
+          }
+        : undefined,
+    }).open();
+  }
+
+  async setFolderColors(path, override) {
+    const normalized = normalizeFolderColorOverride(override);
+    if (!normalized) {
+      await this.clearFolderColors(path);
+      return;
+    }
+    this.settings = pushRecentColors(
+      { ...this.settings, folderColorOverrides: { ...this.settings.folderColorOverrides, [path]: normalized } },
+      overrideColors(normalized),
+    );
+    await this.persistAndRender();
+  }
+
+  async clearFolderColors(path) {
+    if (!getOwn(this.settings.folderColorOverrides, path)) return;
+    const folderColorOverrides = { ...this.settings.folderColorOverrides };
+    delete folderColorOverrides[path];
+    await this.updateSettings({ folderColorOverrides });
   }
 }
 

@@ -1,6 +1,7 @@
-// End-to-end smoke test against the test Obsidian started by setup-vault.sh.
-// Checks that group/folder borders render in the real Notebook Navigator and
-// that colors follow light/dark mode, then saves screenshots to work/shots.
+// End-to-end smoke test against the test Obsidian started by setup-vault.sh
+// (or setup-vault.ps1). Checks that group/folder borders and light/dark folder
+// colors render in the real Notebook Navigator and follow the theme, then
+// saves screenshots to work/shots.
 //
 //   node dev/e2e/smoke.mjs
 import fs from "node:fs";
@@ -42,9 +43,13 @@ try {
       document.querySelector(".nn-list-pane .nn-icon-button")?.click();
       await sleep(1200);
     }
-    const root = document.querySelector('.nn-navigation-pane .nn-navitem[data-path="/"]');
-    if (root && root.getAttribute("aria-expanded") !== "true") root.querySelector(".nn-navitem-chevron")?.click();
-    await sleep(1500);
+    const expand = async (path) => {
+      const row = document.querySelector(`.nn-navigation-pane .nn-navitem[data-path="${path}"]`);
+      if (row && row.getAttribute("aria-expanded") !== "true") row.querySelector(".nn-navitem-chevron")?.click();
+      await sleep(1500);
+    };
+    await expand("/");
+    await expand("10. Data (D)"); // its subfolders inherit the folder colors
     const rect = pane()?.getBoundingClientRect();
     return rect ? { x: rect.x, y: rect.y, width: rect.width, height: Math.min(rect.height, 520) } : null;
   });
@@ -55,11 +60,31 @@ try {
       app.changeTheme(theme);
       await new Promise((r) => setTimeout(r, 1500));
       const boxes = Array.from(document.querySelectorAll(".ach-nn-folder-border-box"));
+      // What the folder rows actually show, next to Notebook Navigator's own inline color.
+      const folders = {};
+      for (const path of ["10. Data (D)", "10. Data (D)/101. Fleeting", "40. Meaning (M)", "70. Documentations", "20. Information (I)"]) {
+        const row = document.querySelector(`.nn-navigation-pane .nn-navitem.nn-folder[data-path="${path}"]`);
+        const name = row?.querySelector(".nn-navitem-name");
+        if (!name) continue;
+        const before = getComputedStyle(row, "::before");
+        const probe = document.createElement("span");
+        probe.style.color = name.style.color;
+        document.body.appendChild(probe);
+        const inline = name.style.color ? getComputedStyle(probe).color : null;
+        probe.remove();
+        folders[path] = {
+          name: getComputedStyle(name).color,
+          icon: getComputedStyle(row.querySelector(".nn-navitem-icon") ?? name).color,
+          nn: inline,
+          background: before.content === "none" ? null : before.backgroundColor,
+        };
+      }
       return {
         dark: document.body.classList.contains("theme-dark"),
         groupBoxes: boxes.filter((b) => b.classList.contains("ach-nn-group-border-box")).length,
         folderBoxes: boxes.filter((b) => !b.classList.contains("ach-nn-group-border-box")).length,
         stops: boxes.map((b) => Array.from(b.querySelectorAll("stop")).map((s) => s.getAttribute("stop-color")).join("→")),
+        folders,
       };
     }, theme);
 
@@ -80,6 +105,40 @@ try {
   check(JSON.stringify(shots.light.stops) !== JSON.stringify(shots.dark.stops), "border colors follow the theme");
   console.log("light:", shots.light.stops.join("  "));
   console.log("dark: ", shots.dark.stops.join("  "));
+
+  // Folder colors from demo-data.json (folderColorOverrides).
+  const light = shots.light.folders;
+  const dark = shots.dark.folders;
+  const data = "10. Data (D)";
+  const sub = "10. Data (D)/101. Fleeting";
+  check(light[data]?.name === "rgb(47, 147, 100)" && light[data]?.icon === "rgb(47, 147, 100)", `light text override (${light[data]?.name})`);
+  check(dark[data]?.name === "rgb(97, 214, 155)", `dark text override (${dark[data]?.name})`);
+  check(dark[data]?.background === "rgb(27, 43, 39)", `dark-only background (${dark[data]?.background})`);
+  check(!light[data]?.background || light[data].background === "rgba(0, 0, 0, 0)", `no background in light (${light[data]?.background})`);
+  check(light[sub]?.name === light[data]?.name && dark[sub]?.background === dark[data]?.background, "subfolder inherits the overrides");
+  // These compare against Notebook Navigator's own color, so SOURCE_VAULT must color them.
+  const nnColored = (folders, path) => {
+    const ok = Boolean(folders[path]?.nn);
+    if (!ok) check(false, `"${path}" needs a Notebook Navigator color in SOURCE_VAULT for this check`);
+    return ok;
+  };
+  const meaning = "40. Meaning (M)";
+  if (nnColored(light, meaning) && nnColored(dark, meaning)) {
+    check(light[meaning].name === "rgb(190, 78, 117)", `light override on a folder Notebook Navigator colors (${light[meaning].name})`);
+    check(dark[meaning].name === dark[meaning].nn, `dark keeps Notebook Navigator's color (${dark[meaning].name})`);
+  }
+  const docs = "70. Documentations";
+  if (nnColored(light, docs) && nnColored(dark, docs)) {
+    check(light[docs].name !== light[docs].nn, `"none" removes the color in light (${light[docs].name})`);
+    check(dark[docs].name === dark[docs].nn, `...and keeps it in dark (${dark[docs].name})`);
+  }
+  const untouched = "20. Information (I)";
+  for (const [label, folders] of [["light", light], ["dark", dark]]) {
+    if (nnColored(folders, untouched)) {
+      check(folders[untouched].name === folders[untouched].nn, `folders without overrides are unchanged in ${label} (${folders[untouched].name})`);
+    }
+  }
+  console.log("folder colors:", JSON.stringify({ light, dark }, null, 2));
   console.log(`screenshots: ${SHOTS}`);
 } finally {
   client.close();

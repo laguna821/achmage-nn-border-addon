@@ -230,6 +230,37 @@ body {
   --ach-nn-chip-bg: #121317;
 }
 
+/* Folder color chips: "A" in the folder's text color on its background, per theme. */
+.ach-nn-color-chip {
+  --ach-nn-chip-bg: #ffffff;
+  --ach-nn-chip-text: #222222;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  box-sizing: border-box;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background:
+    linear-gradient(var(--ach-nn-chip-fill, transparent), var(--ach-nn-chip-fill, transparent)),
+    var(--ach-nn-chip-bg);
+  color: var(--ach-nn-chip-text);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.ach-nn-color-chip.is-dark {
+  --ach-nn-chip-bg: #121317;
+  --ach-nn-chip-text: #dadada;
+}
+
+/* Folder color slots show their color inputs only for "Custom color". */
+.ach-nn-color-slot:not(.is-custom) .setting-item-control input {
+  display: none;
+}
+
 .ach-nn-group-members {
   margin: 0 0 12px;
   padding: 0 0 0 26px;

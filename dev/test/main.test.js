@@ -35,7 +35,8 @@ const nextModule = loadWithInternals(
     normalizeHexColor,normalizeFolderBorders,normalizeBorderGroups,pushRecentColors,renameFolderKeys,removeFolderKeys,
     renameGroupFolders,removeGroupFolders,gradientVector,borderPath,borderedFolderPaths,boxFromRows,collectRuns,
     isSameOrDescendant,loadSettings,resolveThemeColors,buildGroupBoxes,buildFolderBoxes,FOLDER_GEOMETRY,GROUP_GEOMETRY,
-    AchmageNnBorderAddon,DEFAULT_SETTINGS}`,
+    AchmageNnBorderAddon,DEFAULT_SETTINGS,normalizeFolderColorValue,normalizeFolderColorOverride,
+    normalizeFolderColorOverrides,collectFolderColorRules,buildFolderColorCss,cssString,FolderColorModal}`,
 );
 const next = nextModule.__internals;
 
@@ -198,10 +199,12 @@ test("settings migration from a v0.1.0 (v3) data.json keeps every folder border"
   const fakePlugin = { loadData: async () => JSON.parse(JSON.stringify(raw)) };
   const before = await original.K(fakePlugin);
   const after = await next.loadSettings(fakePlugin);
-  assert.equal(after.version, 4);
+  assert.equal(after.version, 5);
   assert.deepEqual(after.borderGroups, []);
+  assert.deepEqual(after.folderColorOverrides, {});
   assert.equal(after.showFolderBorders, true);
   assert.equal(after.showGroupBorders, true);
+  assert.equal(after.showFolderColors, true);
   assert.equal(after.suppressNestedBorders, true);
   assert.deepEqual(after.recentBorderColors, before.recentBorderColors);
   assert.deepEqual(Object.keys(after.folderBorders), Object.keys(before.folderBorders));
@@ -211,7 +214,7 @@ test("settings migration from a v0.1.0 (v3) data.json keeps every folder border"
   }
   // A fresh install still gets defaults.
   const empty = await next.loadSettings({ loadData: async () => null });
-  assert.deepEqual(empty, { ...next.DEFAULT_SETTINGS, version: 4 });
+  assert.deepEqual(empty, { ...next.DEFAULT_SETTINGS, version: 5 });
 });
 
 // ---------------------------------------------------------------------------
@@ -412,7 +415,7 @@ test("plugin group mutations keep one group per folder and persist", async () =>
   const reloaded = await next.loadSettings(plugin);
   assert.deepEqual(reloaded.borderGroups[0].folders, ["20. Information (I)"]);
   assert.equal(reloaded.borderGroups[0].style.darkStartColor, "#f27aa4");
-  assert.equal(reloaded.version, 4);
+  assert.equal(reloaded.version, 5);
   assert.deepEqual(Object.keys(reloaded.folderBorders), ["/", "00. Meta", "80. References", "90. Settings"]);
 });
 
@@ -444,4 +447,218 @@ test("folder border with dark colors keeps them through setFolderBorder", async 
   // Prototype keys are not mistaken for saved borders.
   await plugin.clearFolderBorder("constructor");
   assert.deepEqual(next.borderedFolderPaths(treeRows(["constructor"]), {}, true), []);
+});
+
+// ---------------------------------------------------------------------------
+// Folder colors (light/dark)
+// ---------------------------------------------------------------------------
+
+// A small vault tree. own: Notebook Navigator's own { color, background } per folder.
+function fakeTree(paths, own = {}) {
+  const children = new Map([["/", []]]);
+  for (const p of paths) {
+    children.set(p, []);
+    const parent = p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "/";
+    children.get(parent).push(p);
+  }
+  return {
+    children: (p) => children.get(p) ?? [],
+    hasOwn: (p, key) => Boolean(own[p]?.[key]),
+  };
+}
+
+const COLOR_TREE = fakeTree(
+  [
+    "10. Data (D)",
+    "10. Data (D)/101. Fleeting",
+    "10. Data (D)/101. Fleeting/x",
+    "10. Data (D)/102. Raw",
+    "10. Data (D)/102. Raw/y",
+    "20. Information (I)",
+    "20. Information (I)/201",
+    "90. Settings",
+  ],
+  {
+    "/": { color: "#ffb2cb" },
+    "10. Data (D)": { color: "#a695a5" },
+    "10. Data (D)/102. Raw": { color: "#123456" },
+    "90. Settings": { color: "#8c909a" },
+  },
+);
+
+test("folder color values: hex with optional alpha, or none", () => {
+  assert.equal(next.normalizeFolderColorValue("#ABC"), "#aabbcc");
+  assert.equal(next.normalizeFolderColorValue(" #ef000050 "), "#ef000050");
+  assert.equal(next.normalizeFolderColorValue("#abcd"), "#aabbccdd");
+  assert.equal(next.normalizeFolderColorValue("None"), "none");
+  for (const bad of ["red", "#12", "#12345", "rgb(1,2,3)", "", null, 3]) assert.equal(next.normalizeFolderColorValue(bad), null);
+  assert.deepEqual(
+    next.normalizeFolderColorOverride({ light: { color: "#2F9364", background: "bad" }, dark: { background: "none" }, extra: 1 }),
+    { light: { color: "#2f9364" }, dark: { background: "none" } },
+  );
+  assert.equal(next.normalizeFolderColorOverride({ light: {}, dark: { color: "nope" } }), null);
+  assert.deepEqual(next.normalizeFolderColorOverrides({ a: { dark: { color: "#fff" } }, b: { light: {} }, c: "junk" }), {
+    a: { dark: { color: "#ffffff" } },
+  });
+  assert.deepEqual(next.normalizeFolderColorOverrides(undefined), {});
+});
+
+test("overrides inherit to subfolders until one has its own Notebook Navigator color", () => {
+  const overrides = {
+    "/": { light: { color: "#b65f82" } },
+    "10. Data (D)": { light: { color: "#2f9364" }, dark: { background: "#2d1f28" } },
+  };
+  const lightColor = next.collectFolderColorRules(COLOR_TREE, overrides, "light", "color", true);
+  assert.deepEqual(Object.fromEntries(lightColor), {
+    "#b65f82": ["/", "20. Information (I)", "20. Information (I)/201"],
+    "#2f9364": ["10. Data (D)", "10. Data (D)/101. Fleeting", "10. Data (D)/101. Fleeting/x"],
+  });
+  // 102. Raw has its own color, so it and its subfolder keep Notebook Navigator's.
+  // Backgrounds inherit separately: 102. Raw has no background of its own.
+  const darkBackground = next.collectFolderColorRules(COLOR_TREE, overrides, "dark", "background", true);
+  assert.deepEqual(Object.fromEntries(darkBackground), {
+    "#2d1f28": [
+      "10. Data (D)",
+      "10. Data (D)/101. Fleeting",
+      "10. Data (D)/101. Fleeting/x",
+      "10. Data (D)/102. Raw",
+      "10. Data (D)/102. Raw/y",
+    ],
+  });
+  assert.equal(next.collectFolderColorRules(COLOR_TREE, overrides, "dark", "color", true).size, 0);
+  // Without inheritance only the overridden folders themselves change.
+  assert.deepEqual(Object.fromEntries(next.collectFolderColorRules(COLOR_TREE, overrides, "light", "color", false)), {
+    "#b65f82": ["/"],
+    "#2f9364": ["10. Data (D)"],
+  });
+  // A subfolder's own override wins over its parent's.
+  const nested = { ...overrides, "10. Data (D)/101. Fleeting": { light: { color: "none" } } };
+  assert.deepEqual(Object.fromEntries(next.collectFolderColorRules(COLOR_TREE, nested, "light", "color", true)).none, [
+    "10. Data (D)/101. Fleeting",
+    "10. Data (D)/101. Fleeting/x",
+  ]);
+});
+
+test("folder color CSS is theme-scoped, beats inline styles and follows colorIconOnly", () => {
+  const overrides = {
+    "10. Data (D)": { light: { color: "#2f9364", background: "none" }, dark: { background: "#2d1f28" } },
+    "90. Settings": { light: { color: "none" } },
+  };
+  const css = next.buildFolderColorCss(COLOR_TREE, overrides, { inherit: true, colorIconOnly: false });
+  const row = (theme, p) => `body.theme-${theme} .nn-navitem.nn-folder[data-path="${p}"]`;
+  assert.ok(css.includes(`${row("light", "10. Data (D)")} .nn-navitem-icon,`));
+  assert.ok(!css.includes(`${row("light", "10. Data (D)/102. Raw")} .nn-navitem-icon`), "own NN color stops inheritance");
+  assert.match(css, /\.nn-navitem-name \{\n {2}color: #2f9364 !important;\n {2}font-weight: var\(--nn-theme-navitem-custom-color-name-font-weight\);\n\}/);
+  // The light "none" background reaches every subfolder (none has its own background).
+  assert.ok(css.includes(`${row("light", "10. Data (D)")},\n${row("light", "10. Data (D)/101. Fleeting")},`));
+  assert.ok(css.includes(`${row("light", "10. Data (D)/102. Raw/y")} {\n  --nn-navitem-custom-bg-color: transparent !important;\n}`));
+  assert.ok(css.includes(`${row("dark", "10. Data (D)/102. Raw/y")} {\n  --nn-navitem-custom-bg-color: #2d1f28 !important;`));
+  // Dark rows without Notebook Navigator's own background get a drawn ::before.
+  assert.ok(css.includes(`${row("dark", "10. Data (D)")}:not(.nn-has-custom-background)::before`));
+  assert.ok(!css.includes(`${row("light", "10. Data (D)")}:not(.nn-has-custom-background)::before`));
+  // "none" restores the theme's own colors, keeping selection colors on selected rows.
+  assert.ok(css.includes(`${row("light", "90. Settings")}:not(.nn-selected) .nn-navitem-name {\n  color: var(--nn-theme-navitem-name-color) !important`));
+  assert.ok(css.includes(`${row("light", "90. Settings")}.nn-selected .nn-navitem-icon {\n  color: var(--nn-selected-navitem-icon-color) !important`));
+  // With colorIconOnly, Notebook Navigator colors only icons, and so do overrides.
+  const iconOnly = next.buildFolderColorCss(COLOR_TREE, overrides, { inherit: true, colorIconOnly: true });
+  assert.ok(iconOnly.includes(".nn-navitem-icon"));
+  assert.ok(!iconOnly.includes(".nn-navitem-name"));
+  assert.equal(next.buildFolderColorCss(COLOR_TREE, {}, {}), "");
+});
+
+test("folder paths are escaped inside CSS attribute selectors", () => {
+  assert.equal(next.cssString('a "b" \\c'), '"a \\"b\\" \\\\c"');
+  assert.equal(next.cssString("line\nbreak"), '"line\\a break"');
+  const css = next.buildFolderColorCss(fakeTree(['Quote "x"']), { 'Quote "x"': { dark: { color: "#ffffff" } } });
+  assert.ok(css.includes('[data-path="Quote \\"x\\""]'));
+});
+
+test("folder color modal turns slots into an override", () => {
+  const modal = new next.FolderColorModal({}, {
+    path: "10. Data (D)",
+    current: { dark: { color: "#f27aa4", background: "none" } },
+    nnColors: { color: "#a695a5", background: null },
+    recentColors: ["#2f9364"],
+  });
+  // Saved values come back as modes; custom slots start from Notebook Navigator's color.
+  assert.deepEqual(modal.slots.dark.color, { mode: "custom", custom: "#f27aa4" });
+  assert.deepEqual(modal.slots.dark.background, { mode: "none", custom: "#2f9364" });
+  assert.deepEqual(modal.slots.light.color, { mode: "follow", custom: "#a695a5" });
+  assert.deepEqual(modal.buildOverride(), { dark: { color: "#f27aa4", background: "none" } });
+  modal.slots.light.color.mode = "custom";
+  modal.slots.light.color.custom = "#2F9364";
+  assert.deepEqual(modal.buildOverride(), { light: { color: "#2f9364" }, dark: { color: "#f27aa4", background: "none" } });
+  modal.slots.light.color.custom = "green";
+  assert.equal(modal.buildOverride(), undefined);
+  for (const theme of ["light", "dark"]) for (const key of ["color", "background"]) modal.slots[theme][key].mode = "follow";
+  assert.equal(modal.buildOverride(), null);
+});
+
+test("plugin folder colors persist, follow renames and render a stylesheet", async () => {
+  const { TFolder } = obsidianStub;
+  const folders = new Map();
+  const addFolder = (p) => {
+    const node = new TFolder(p);
+    node.children = [];
+    folders.set(p, node);
+    if (p !== "/") folders.get(p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "/").children.push(node);
+  };
+  ["/", "10. Data (D)", "10. Data (D)/101", "90. Settings"].forEach(addFolder);
+  const nnColors = { "/": { color: "#ffb2cb" }, "90. Settings": { color: "#8c909a", backgroundColor: "#202126" } };
+  const appended = [];
+  const plugin = makePlugin(null);
+  global.document.head = { appendChild: (el) => appended.push(el) };
+  global.document.createElement = () => ({
+    id: "",
+    textContent: "",
+    remove() {
+      appended.splice(appended.indexOf(this), 1);
+    },
+  });
+  plugin.app = {
+    vault: { getRoot: () => folders.get("/"), getAbstractFileByPath: (p) => folders.get(p) ?? null },
+    plugins: { plugins: { "notebook-navigator": { settings: { inheritFolderColors: true, colorIconOnly: false } } } },
+  };
+  plugin.nn = { metadata: { getFolderMeta: (node) => nnColors[node.path] ?? null } };
+  plugin.settings = await next.loadSettings(plugin);
+
+  assert.deepEqual(plugin.readNotebookNavigatorFolderColors("90. Settings"), { color: "#8c909a", background: "#202126" });
+  await plugin.setFolderColors("10. Data (D)", { light: { color: "#2F9364" }, dark: { color: "#A695A5", background: "#2D1F28" } });
+  await plugin.setFolderColors("90. Settings", { light: { background: "none" } });
+  assert.deepEqual(plugin.settings.folderColorOverrides["10. Data (D)"], {
+    light: { color: "#2f9364" },
+    dark: { color: "#a695a5", background: "#2d1f28" },
+  });
+  assert.deepEqual(plugin.settings.recentBorderColors.slice(0, 3), ["#2f9364", "#a695a5", "#2d1f28"]);
+
+  plugin.refreshFolderColors();
+  assert.equal(appended.length, 1);
+  const css = appended[0].textContent;
+  assert.equal(appended[0].id, "ach-nn-folder-colors");
+  assert.ok(css.includes('body.theme-light .nn-navitem.nn-folder[data-path="10. Data (D)/101"] .nn-navitem-icon'));
+  assert.ok(css.includes('body.theme-light .nn-navitem.nn-folder[data-path="90. Settings"] {\n  --nn-navitem-custom-bg-color: transparent !important;'));
+
+  // Renames move the override; unrelated renames do not write data.json.
+  const writes = plugin.saved.length;
+  await plugin.updateFolderPaths({ folderColorOverrides: next.renameFolderKeys(plugin.settings.folderColorOverrides, "nope", "x") });
+  assert.equal(plugin.saved.length, writes);
+  await plugin.updateFolderPaths({
+    folderColorOverrides: next.renameFolderKeys(plugin.settings.folderColorOverrides, "10. Data (D)", "10. Data"),
+  });
+  assert.deepEqual(Object.keys(plugin.settings.folderColorOverrides).sort(), ["10. Data", "90. Settings"]);
+  const reloaded = await next.loadSettings(plugin);
+  assert.deepEqual(reloaded.folderColorOverrides["10. Data"].dark, { color: "#a695a5", background: "#2d1f28" });
+
+  // Turning the feature off, or clearing every override, removes the stylesheet.
+  await plugin.updateSettings({ showFolderColors: false });
+  plugin.refreshFolderColors();
+  assert.equal(appended.length, 0);
+  await plugin.updateSettings({ showFolderColors: true });
+  plugin.refreshFolderColors();
+  assert.equal(appended.length, 1);
+  await plugin.clearFolderColors("10. Data");
+  await plugin.setFolderColors("90. Settings", { light: {} });
+  assert.deepEqual(plugin.settings.folderColorOverrides, {});
+  plugin.refreshFolderColors();
+  assert.equal(appended.length, 0);
 });

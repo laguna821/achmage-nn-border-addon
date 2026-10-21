@@ -1,5 +1,11 @@
 {
-  "version": 4,
+  "version": 5,
+  "folderColorOverrides": {
+    "10. Data (D)": { "light": { "color": "#2f9364" }, "dark": { "color": "#61d69b", "background": "#1b2b27" } },
+    "40. Meaning (M)": { "light": { "color": "#be4e75" } },
+    "70. Documentations": { "light": { "color": "none" } }
+  },
+  "showFolderColors": true,
   "folderBorders": {
     "/": { "startColor": "#0a85f0", "endColor": null, "darkStartColor": "#ffb2cb", "darkEndColor": null, "insetX": 0, "radius": 6 }
   },

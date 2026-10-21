@@ -1,6 +1,7 @@
 // Tiny Chrome DevTools Protocol client for driving the isolated Obsidian.
-// Usage: node cdp.mjs eval "<js expression>"   |   node cdp.mjs shot <file.png> [x y w h]
+// Usage: node cdp.mjs eval "<js expression>"   |   node cdp.mjs shot <file.png> [x y w h]   |   node cdp.mjs quit
 import fs from "node:fs";
+import { pathToFileURL } from "node:url";
 
 const PORT = process.env.CDP_PORT || "9333";
 
@@ -44,11 +45,16 @@ export async function connect() {
   return { send, evaluate, close: () => ws.close() };
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   const [, , command, ...args] = process.argv;
   const client = await connect();
   try {
-    if (command === "eval") {
+    if (command === "quit") {
+      // Normal app shutdown; the reply may not arrive once the app is gone.
+      client.evaluate('setTimeout(() => require("@electron/remote").app.quit(), 100), "quitting"').catch(() => {});
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      console.log("quit requested");
+    } else if (command === "eval") {
       const value = await client.evaluate(args[0]);
       console.log(typeof value === "string" ? value : JSON.stringify(value, null, 2));
     } else if (command === "shot") {

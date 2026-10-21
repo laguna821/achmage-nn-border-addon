@@ -1,9 +1,9 @@
 {
   "id": "achmage-nn-border-addon",
   "name": "Achmage Notebook Navigator Border Add-on",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "minAppVersion": "1.8.7",
-  "description": "Adds folder and grouped-folder borders with separate light/dark colors to Notebook Navigator using a safe add-on overlay approach.",
+  "description": "Adds folder borders, grouped-folder borders and separate light/dark folder colors to Notebook Navigator using a safe add-on overlay approach.",
   "author": "Achmage",
   "isDesktopOnly": false
 }
